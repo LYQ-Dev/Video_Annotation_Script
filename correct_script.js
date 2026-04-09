@@ -6,7 +6,11 @@
 // @author       Gemini
 // @match        https://data.hep.com.cn/mark/taskInfo/*
 // @grant        GM_xmlhttpRequest
+
+//这里记得填写你的模型来源
 // @connect      ark.cn-beijing.volces.com
+
+
 // ==/UserScript==
 
 (function() {
