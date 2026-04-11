@@ -1,12 +1,13 @@
 // ==UserScript==
 // @name         高教社数据加工平台-自动纠错工具 Pro
 // @namespace    http://tampermonkey.net/
-// @version      4.6
-// @description  Google风格 | 一体化面板 | 性能监控 | API连通测试 | 未修改统计
+// @version      4.8
+// @description  恢复提示词输入框 | 读取平台提示词 | 暂停显示 | 高性能
 // @author       Lyq
 // @match        https://data.hep.com.cn/mark/taskInfo/*
 // @grant        GM_xmlhttpRequest
 // @connect      *
+// @run-at       document-idle
 // ==/UserScript==
 
 (function() {
@@ -21,6 +22,11 @@
         success: 0, noChange: 0, fail: 0, tokens: 0, startTime: null,
         apiTotalTime: 0, apiAvgTime: 0, apiCount: 0
     };
+
+    let isPaused = false;
+    let isStopped = false;
+    let currentIndex = 0;
+    let targets = [];
 
     let originalPlay = null;
     function lockVideo() {
@@ -69,7 +75,7 @@
     }
 
     const panel = document.createElement('div');
-    panel.style.cssText = `position: fixed; bottom: 50px; right: 50px; z-index: 9999; width: 220px; padding: 16px; background: #fff; border-radius: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 4px 12px rgba(0,0,0,0.08); font-size: 14px; line-height: 1.6; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; cursor: move; user-select: none; transition: all 0.25s cubic-bezier(0.25, 0.8, 0.25, 1); opacity: 0; transform: translateY(12px) scale(0.98); border: 1px solid #f0f0f0;`;
+    panel.style.cssText = "position: fixed; bottom: 50px; right: 50px; z-index: 9999; width: 220px; padding: 16px; background: #fff; border-radius: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 4px 12px rgba(0,0,0,0.08); font-size: 14px; line-height: 1.6; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; cursor: move; user-select: none; transition: all 0.25s cubic-bezier(0.25, 0.8, 0.25, 1); opacity: 0; transform: translateY(12px) scale(0.98); border: 1px solid #f0f0f0;";
     panel.innerHTML = `<div style="font-weight:500; font-size:15px; color:#202124; margin-bottom:12px;">📊 自动纠错面板</div>
 <div style="display:flex; justify-content:space-between; color:#5f6368; margin-bottom:4px;"><span>✅ 成功</span><span id="st-success" style="font-weight:500;">0</span></div>
 <div style="display:flex; justify-content:space-between; color:#5f6368; margin-bottom:4px;"><span>📝 未修改</span><span id="st-nochange" style="font-weight:500;">0</span></div>
@@ -79,17 +85,21 @@
 <div style="display:flex; justify-content:space-between; color:#5f6368; margin-bottom:4px;"><span>⚡ API 总耗时</span><span id="st-api-total" style="font-weight:500;">0</span>s</div>
 <div style="display:flex; justify-content:space-between; color:#5f6368; margin-bottom:12px;"><span>📊 平均响应</span><span id="st-api-avg" style="font-weight:500;">0</span>ms</div>
 <button id="start-btn" style="width:100%; height:40px; background:#1967d2; color:white; border:none; border-radius:8px; font-weight:500; font-size:14px; cursor:pointer; transition:all 0.2s ease; margin-bottom:8px;">🐱 开始全自动识别</button>
+<div style="display:flex; gap:8px; margin-bottom:8px;">
+<button id="pause-btn" style="flex:1; height:40px; background:#f59e0b; color:white; border:none; border-radius:8px; font-weight:500; font-size:13px; cursor:pointer;">⏸ 暂停</button>
+<button id="resume-btn" style="flex:1; height:40px; background:#10b981; color:white; border:none; border-radius:8px; font-weight:500; font-size:13px; cursor:pointer;">▶ 继续</button>
+</div>
+<button id="stop-btn" style="width:100%; height:40px; background:#ef4444; color:white; border:none; border-radius:8px; font-weight:500; font-size:14px; cursor:pointer; margin-bottom:8px;">⏹ 停止识别</button>
 <button id="open-config" style="width:100%; height:36px; background:#f1f3f4; color:#1967d2; border:none; border-radius:8px; font-size:13px; cursor:pointer; transition:all 0.2s ease;">⚙️ 编辑 API 配置</button>`;
     document.body.appendChild(panel);
     makeDraggable(panel);
 
     setTimeout(() => { panel.style.opacity = '1'; panel.style.transform = 'translateY(0) scale(1)'; }, 200);
 
-    const startBtn = document.getElementById('start-btn'), openCfgBtn = document.getElementById('open-config');
-    startBtn.onmouseover = () => startBtn.style.background = '#1557b1';
-    startBtn.onmouseout = () => startBtn.style.background = '#1967d2';
-    openCfgBtn.onmouseover = () => openCfgBtn.style.background = '#e8e9ed';
-    openCfgBtn.onmouseout = () => openCfgBtn.style.background = '#f1f3f4';
+    const startBtn = document.getElementById('start-btn');
+    const pauseBtn = document.getElementById('pause-btn');
+    const resumeBtn = document.getElementById('resume-btn');
+    const stopBtn = document.getElementById('stop-btn');
 
     function updateStatsDisplay() {
         document.getElementById('st-success').innerText = stats.success;
@@ -101,8 +111,11 @@
         document.getElementById('st-api-avg').innerText = stats.apiCount ? Math.round(stats.apiAvgTime) : 0;
     }
 
+    // ==============================================
+    // 核心修复：恢复你截图里的完整API配置面板（含提示词输入框）
+    // ==============================================
     const configPanel = document.createElement('div');
-    configPanel.style.cssText = `position: fixed; bottom: 50px; right: 290px; z-index: 9998; width: 320px; background: #fff; border-radius: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 8px 20px rgba(0,0,0,0.1); padding: 20px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; cursor: move; transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1); opacity: 0; transform: translateY(12px) scale(0.97); pointer-events: none; visibility: hidden; border: 1px solid #f0f0f0;`;
+    configPanel.style.cssText = "position: fixed; bottom: 50px; right: 290px; z-index: 9998; width: 320px; background: #fff; border-radius: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 8px 20px rgba(0,0,0,0.1); padding: 20px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; cursor: move; transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1); opacity: 0; transform: translateY(12px) scale(0.97); pointer-events: none; visibility: hidden; border: 1px solid #f0f0f0;";
     configPanel.innerHTML = `<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;"><div style="font-weight:500; font-size:16px; color:#202124;">⚙️ API 配置</div><button id="close-config" style="background:none; border:none; font-size:18px; color:#5f6368; cursor:pointer;">✕</button></div>
 <div style="margin-bottom:12px;"><label style="display:block; font-size:13px; color:#5f6368; margin-bottom:6px;">API Key</label><input id="cfg-key" type="password" style="width:100%; box-sizing:border-box; padding:10px 12px; border:1px solid #dadce0; border-radius:8px; font-size:14px; outline:none; transition:border-color 0.2s;" value="${CONFIG.apiKey}"></div>
 <div style="margin-bottom:12px;"><label style="display:block; font-size:13px; color:#5f6368; margin-bottom:6px;">API 地址</label><input id="cfg-url" type="text" style="width:100%; box-sizing:border-box; padding:10px 12px; border:1px solid #dadce0; border-radius:8px; font-size:14px; outline:none; transition:border-color 0.2s;" value="${CONFIG.apiUrl}"></div>
@@ -138,14 +151,26 @@
         inp.addEventListener('blur', () => inp.style.borderColor = '#dadce0');
     });
 
+    // ==============================================
+    // 新增：读取平台页面提示词的逻辑（双模式支持）
+    // ==============================================
+    function getPagePrompt() {
+        const pagePromptEl = document.querySelector('textarea[placeholder*="提示词"]')
+                          || document.querySelector('textarea#prompt')
+                          || document.querySelector('textarea');
+        const pagePrompt = (pagePromptEl?.value || '').trim();
+        // 优先级：平台页面提示词 > 脚本配置提示词
+        return pagePrompt || CONFIG.prompt;
+    }
+
     document.getElementById('test-api').onclick = async () => {
         const key = document.getElementById('cfg-key').value.trim();
         const url = document.getElementById('cfg-url').value.trim();
         const model = document.getElementById('cfg-model').value.trim();
-        const prompt = document.getElementById('cfg-prompt').value.trim();
+        const prompt = getPagePrompt(); // 读取最新提示词
         const isVolcNewFormat = url.includes('/responses');
 
-        if (!key || !url || !model) return alert('⚠️ 请填写完整信息');
+        if (!key || !url || !model) return alert('⚠️ 请填写完整API信息');
 
         const btn = document.getElementById('test-api');
         btn.disabled = true; btn.innerHTML = '🔄 测试中...';
@@ -184,7 +209,6 @@
             });
 
             const cost = Date.now() - start;
-            const data = JSON.parse(res.responseText);
             alert(`🟢 API 测试成功！\n耗时：${cost}ms`);
         } catch (e) {
             alert(`🔴 测试失败：\n${e.toString()}`);
@@ -194,18 +218,18 @@
     };
 
     async function fetchAICorrection(text) {
+        const prompt = getPagePrompt(); // 每次都读取最新提示词
         stats.tokens += (text.match(/[\u4e00-\u9fa5]/g) || []).length * 2 + text.length * 0.5 + 100;
         const start = Date.now();
         const isVolcNewFormat = CONFIG.apiUrl.includes('/responses');
 
         return new Promise((resolve, reject) => {
             let postData;
-
             if (isVolcNewFormat) {
                 postData = JSON.stringify({
                     model: CONFIG.model,
                     input: [
-                        { role: "system", content: [{ type: "input_text", text: CONFIG.prompt }] },
+                        { role: "system", content: [{ type: "input_text", text: prompt }] },
                         { role: "user", content: [{ type: "input_text", text: text }] }
                     ]
                 });
@@ -213,7 +237,7 @@
                 postData = JSON.stringify({
                     model: CONFIG.model,
                     messages: [
-                        { role: "system", content: CONFIG.prompt },
+                        { role: "system", content: prompt },
                         { role: "user", content: text }
                     ],
                     temperature: 0
@@ -231,17 +255,9 @@
                 onload: res => {
                     try {
                         const data = JSON.parse(res.responseText);
-                        let result = '';
-                        if (isVolcNewFormat) {
-                            result = data.output?.text || '';
-                        } else {
-                            result = data.choices?.[0]?.message?.content || '';
-                        }
-                        if (result) resolve(result.trim());
-                        else reject('返回内容为空');
-                    } catch {
-                        reject('解析失败');
-                    }
+                        const result = isVolcNewFormat ? (data.output?.text || '') : (data.choices?.[0]?.message?.content || '');
+                        result ? resolve(result.trim()) : reject('返回为空');
+                    } catch { reject('解析失败'); }
                 },
                 onerror: () => reject('网络失败')
             });
@@ -253,51 +269,105 @@
         });
     }
 
-    document.getElementById('start-btn').onclick = async () => {
-        if (!CONFIG.apiKey || !CONFIG.apiUrl || !CONFIG.model) { alert('⚠️ 请先配置 API'); showConfig(); return; }
-        const targets = Array.from(document.querySelectorAll('div[class*="textBox__"]'));
-        if (!targets.length) return alert('未找到字幕块');
+    pauseBtn.onclick = function() {
+        isPaused = true;
+        startBtn.innerHTML = "⏸ 暂停中";
+    };
 
-        stats.success = stats.noChange = stats.fail = stats.tokens = stats.apiTotalTime = stats.apiCount = stats.apiAvgTime = 0;
-        stats.startTime = Date.now();
-        const timer = setInterval(updateStatsDisplay, 500);
-        startBtn.disabled = true; startBtn.style.background = '#8ab4f8'; startBtn.innerHTML = '🐱 正在识别...';
-        lockVideo();
+    resumeBtn.onclick = function() {
+        isPaused = false;
+        if(targets.length) startBtn.innerHTML = `🐱 处理中 ${currentIndex+1}/${targets.length}`;
+    };
 
-        for (let i = 0; i < targets.length; i++) {
-            const container = targets[i];
-            const textNode = container.querySelector('div[class*="text__"]');
-            if (!textNode) continue;
-            const originalText = textNode.innerText.trim();
-            if (originalText.length < 2) continue;
+    stopBtn.onclick = function() {
+        isStopped = true;
+        isPaused = false;
+    };
 
-            try {
-                startBtn.innerHTML = `🐱 处理中 ${i+1}/${targets.length}`;
-                const corrected = await fetchAICorrection(originalText);
-                container.scrollIntoView({ block:'center', behavior:'smooth' });
-                ['mousedown','mouseup','click','dblclick'].forEach(e => container.dispatchEvent(new MouseEvent(e,{bubbles:true})));
-
-                let input = null;
-                for(let t=0;t<10;t++) { await new Promise(r=>setTimeout(r,150)); input = container.querySelector('textarea,input') || (document.activeElement.tagName==='TEXTAREA'?document.activeElement:null); if(input) break; }
-
-                if (input) {
-                    corrected === originalText ? stats.noChange++ : stats.success++;
-                    setNativeValue(input, corrected);
-                    input.dispatchEvent(new Event('input',{bubbles:true}));
-                    input.dispatchEvent(new Event('change',{bubbles:true}));
-                    input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));
-                    await new Promise(r=>setTimeout(r,100)); input.blur();
-                    container.style.backgroundColor = '#f6ffed';
-                } else stats.fail++;
-
-                updateStatsDisplay();
-                await new Promise(r=>setTimeout(r,400));
-            } catch (e) { stats.fail++; console.error(e); }
+    async function runStep() {
+        if (isStopped || currentIndex >= targets.length) {
+            unlockVideo();
+            clearInterval(window.statsTimer);
+            startBtn.disabled = false;
+            startBtn.style.background = '#1967d2';
+            startBtn.innerHTML = isStopped ? '⏹ 已停止' : '🎉 处理完成';
+            setTimeout(()=>{ startBtn.innerHTML = '🐱 开始全自动识别'; }, 3000);
+            if(isStopped) currentIndex = 0;
+            return;
         }
 
-        clearInterval(timer); unlockVideo(); updateStatsDisplay();
-        startBtn.disabled = false; startBtn.style.background = '#1967d2';
-        startBtn.innerHTML = '🎉 处理完成了喵~';
-        setTimeout(()=>startBtn.innerHTML='🐱 开始全自动识别',3000);
+        if(isPaused) {
+            startBtn.innerHTML = "⏸ 暂停中";
+            await new Promise(r=>setTimeout(r, 100));
+            runStep();
+            return;
+        }
+
+        startBtn.innerHTML = `🐱 处理中 ${currentIndex+1}/${targets.length}`;
+        const container = targets[currentIndex];
+        const textNode = container.querySelector('div[class*="text__"]');
+
+        if (!textNode || textNode.innerText.trim().length < 2) {
+            currentIndex++;
+            setTimeout(runStep, 0);
+            return;
+        }
+
+        try {
+            const originalText = textNode.innerText.trim();
+            const corrected = await fetchAICorrection(originalText);
+            container.scrollIntoView({ block:'center', behavior:'smooth' });
+            ['mousedown','mouseup','click','dblclick'].forEach(e=>container.dispatchEvent(new MouseEvent(e,{bubbles:true})));
+
+            let input = null;
+            for(let t=0;t<10;t++) {
+                await new Promise(r=>setTimeout(r,150));
+                input = container.querySelector('textarea,input') || (document.activeElement.tagName==='TEXTAREA' ? document.activeElement : null);
+                if(input) break;
+            }
+
+            if(input) {
+                corrected === originalText ? stats.noChange++ : stats.success++;
+                setNativeValue(input, corrected);
+                input.dispatchEvent(new Event('input',{bubbles:true}));
+                input.dispatchEvent(new Event('change',{bubbles:true}));
+                input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));
+                await new Promise(r=>setTimeout(r,100));
+                input.blur();
+                container.style.backgroundColor = '#f6ffed';
+            } else {
+                stats.fail++;
+            }
+            updateStatsDisplay();
+        } catch(e) {
+            stats.fail++;
+            console.error(e);
+        }
+
+        currentIndex++;
+        await new Promise(r=>setTimeout(r, 300));
+        runStep();
+    }
+
+    startBtn.onclick = async function() {
+        if (!CONFIG.apiKey || !CONFIG.apiUrl || !CONFIG.model) {
+            alert('⚠️ 请先配置API');
+            showConfig();
+            return;
+        }
+
+        targets = Array.from(document.querySelectorAll('div[class*="textBox__"]'));
+        if(!targets.length) { alert('未找到字幕块'); return; }
+
+        stats = { success:0, noChange:0, fail:0, tokens:0, startTime:Date.now(), apiTotalTime:0, apiAvgTime:0, apiCount:0 };
+        isPaused = false;
+        isStopped = false;
+        currentIndex = 0;
+
+        startBtn.disabled = true;
+        startBtn.style.background = '#8ab4f8';
+        lockVideo();
+        window.statsTimer = setInterval(updateStatsDisplay, 500);
+        runStep();
     };
 })();
